@@ -1,6 +1,6 @@
-# LG TV Touch Remote for the Cheap Yellow Display
+# Smart Remote+ for CYD
 
-A standalone Wi-Fi remote for LG webOS TVs, running on the £10 **ESP32-2432S028**
+*Smart Remote+* as a standalone Wi-Fi remote for LG webOS TVs, running on the £10 **ESP32-2432S028**
 ("Cheap Yellow Display"): a 2.8" touchscreen with an ESP32 behind it. No hub, no
 phone, no app on the TV. Pair once, then tap.
 
@@ -9,7 +9,7 @@ phone, no app on the TV. Pair once, then tap.
 
 ![Remote page](docs/remote.png)
 
-It is a hardware version of *Smart Remote+*: the same webOS protocol, the same
+It is the hardware version of the app: the same webOS protocol, the same
 key artwork, and the same pairing manifest, so pairings made with
 [lgtvremote-cli](https://github.com/griches/lgtvremote-cli) can be imported
 unchanged.
