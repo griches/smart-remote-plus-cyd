@@ -2,3 +2,7 @@
 .vscode/
 include/secrets.h
 include/tv_config.h
+
+dist/
+__pycache__/
+graphify-out/

@@ -163,7 +163,7 @@ void LGTV::fetchApps() {
     String reg;
     reg.reserve(strlen_P(LG_MANIFEST) + 200);
     reg += F("{\"type\":\"register\",\"id\":\"r\",\"payload\":{\"client-key\":\""); reg += cur_.clientKey;
-    reg += F("\",\"pairingType\":\"prompt\",\"forcePairing\":false,\"manifest\":"); reg += FPSTR(LG_MANIFEST); reg += F("}}");
+    reg += F("\",\"pairingType\":\"prompt\",\"forcePairing\":false,\"manifest\":"); reg += lgManifest(unsignedRegistration_); reg += F("}}");
     wsSendText(*c, reg);
   }
   bool registered = false;
@@ -263,9 +263,28 @@ void LGTV::task() {
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
-    if (!wsBegun_) connectMain();
+    if (!wsBegun_ && !registrationBlocked_) connectMain();
 
     if (wsBegun_) ws_.loop();
+    if (unsignedRetryPending_) {
+      unsignedRetryPending_ = false;
+      dropAll();
+      unsignedRegistration_ = true;
+      consentStarted_ = false;
+      pinSubmitted_ = false;
+      connectMain();
+    }
+    if (registrationDeadline_ && (int32_t)(millis() - registrationDeadline_) >= 0) {
+      registrationDeadline_ = 0;
+      if (!unsignedRegistration_ && !registrationAnswered_ && !consentStarted_ && !pinSubmitted_) {
+        unsignedRetryPending_ = true;
+      } else {
+        registrationBlocked_ = true;
+        pairFailed = true;
+        lastError = millis();
+        dropAll();
+      }
+    }
     if (ptrBegun_) ptr_.loop();
     expirePending();
 
@@ -279,6 +298,7 @@ void LGTV::task() {
 // ----------------------------------------------------------- connection
 
 void LGTV::dropAll() {
+  registrationDeadline_ = 0;
   if (ptrBegun_) { ptr_.disconnect(); ptrBegun_ = false; }
   ptrOpen_ = false;
   if (wsBegun_) { ws_.disconnect(); wsBegun_ = false; }
@@ -287,12 +307,19 @@ void LGTV::dropAll() {
 }
 
 void LGTV::connectMain() {
+  int previousIdx = curIdx_;
   curIdx_ = store_->selected();
   if (!store_->get(curIdx_, cur_)) {
     curIdx_ = -1;
     if (link.load() != LinkState::NoTV) { LOGF("%s no TV configured\n", TAG); link = LinkState::NoTV; }
     return;
   }
+  if (previousIdx != curIdx_) {
+    unsignedRegistration_ = cur_.unsignedRegistration;
+    consentStarted_ = false;
+    pinSubmitted_ = false;
+    registrationBlocked_ = false;
+  } else if (cur_.unsignedRegistration) unsignedRegistration_ = true;
   link = LinkState::Connecting;
   LOGF("%s connecting to %s (%s) via %s%s\n", TAG, cur_.name, cur_.ip, useTls_ ? "wss:3001" : "ws:3000",
        pairing.load() ? " [pairing]" : "");
@@ -303,13 +330,19 @@ void LGTV::connectMain() {
 
 void LGTV::sendRegister() {
   bool withKey = cur_.clientKey[0] && !pairing.load();
+  registrationId_ = "register_" + String(nextId_++);
+  pinRequestId_ = 0;
+  registrationAnswered_ = false;
+  registrationDeadline_ = millis() + 15000;
   String msg;
   msg.reserve(strlen_P(LG_MANIFEST) + 256);
-  msg += F("{\"type\":\"register\",\"id\":\"register_0\",\"payload\":{");
+  msg += F("{\"type\":\"register\",\"id\":\"");
+  msg += registrationId_;
+  msg += F("\",\"payload\":{");
   if (withKey) { msg += F("\"client-key\":\""); msg += cur_.clientKey; msg += F("\","); }
   msg += withKey ? F("\"pairingType\":\"prompt\"") : F("\"pairingType\":\"PIN\"");
   msg += F(",\"forcePairing\":false,\"manifest\":");
-  msg += FPSTR(LG_MANIFEST);
+  msg += lgManifest(unsignedRegistration_);
   msg += F("}}");
   ws_.sendTXT(msg);
 }
@@ -317,13 +350,17 @@ void LGTV::sendRegister() {
 void LGTV::onRegistered(const char* key) {
   LOGF("%s registered with %s\n", TAG, cur_.name);
   link = LinkState::Registered;
+  registrationDeadline_ = 0;
+  consentStarted_ = false;
+  pinSubmitted_ = false;
   failStreak_ = 0;
   bool wasPairing = pairing.exchange(false);
   pairFailed = false;
 
-  if (key && *key && strcmp(key, cur_.clientKey)) {
+  if (key && *key && (strcmp(key, cur_.clientKey) || cur_.unsignedRegistration != unsignedRegistration_)) {
     // New pairing, or the TV rotated the key: persist it (plugin does the same).
     strlcpy(cur_.clientKey, key, sizeof(cur_.clientKey));
+    cur_.unsignedRegistration = unsignedRegistration_;
     store_->update(curIdx_, cur_);
     LOGF("%s stored %s client key for %s\n", TAG, wasPairing ? "new" : "rotated", cur_.name);
   }
@@ -382,6 +419,18 @@ void LGTV::onMainEvent(WStype_t type, uint8_t* data, size_t len) {
       break;
 
     case WStype_DISCONNECTED:
+      registrationDeadline_ = 0;
+      if (consentStarted_ || pinSubmitted_) {
+        registrationBlocked_ = true;
+        pairFailed = true;
+      }
+      if (registrationBlocked_) {
+        wsBegun_ = false;
+        if (ptrBegun_) { ptr_.disconnect(); ptrBegun_ = false; }
+        ptrOpen_ = false;
+        link = LinkState::Connecting;
+        break;
+      }
       if (link.load() == LinkState::Registered) LOGF("%s disconnected\n", TAG);
       else if (++failStreak_ >= 2) {
         // Same fallback as the plugin: old firmware only speaks plain ws:3000.
@@ -404,29 +453,32 @@ void LGTV::onMainEvent(WStype_t type, uint8_t* data, size_t len) {
       JsonObjectConst payload = doc["payload"].as<JsonObjectConst>();
       lastActivity = millis();
 
-      if (!strcmp(mtype, "registered") || (!strcmp(mtype, "response") && payload["client-key"].is<const char*>())) {
-        onRegistered(payload["client-key"] | "");
-        return;
-      }
-      if (link.load() != LinkState::Registered) {
+      bool registrationReply = registrationId_ == id || (pinRequestId_ && String(pinRequestId_) == id);
+      if (link.load() != LinkState::Registered && registrationReply) {
+        registrationAnswered_ = true;
+        if ((!strcmp(mtype, "registered") || !strcmp(mtype, "response")) && payload["client-key"].is<const char*>()) {
+          onRegistered(payload["client-key"] | "");
+          return;
+        }
         const char* pt = payload["pairingType"] | "";
-        if (!strcasecmp(pt, "pin")) {
-          LOGF("%s TV is showing a PIN\n", TAG);
-          link = LinkState::NeedsPin;
+        if (!strcasecmp(pt, "pin") || !strcasecmp(pt, "prompt")) {
+          consentStarted_ = true;
+          registrationDeadline_ = millis() + 120000;
+          if (!strcasecmp(pt, "pin")) link = LinkState::NeedsPin;
           return;
         }
         if (!strcmp(mtype, "error")) {
           const char* err = doc["error"] | "?";
-          LOGF("%s registration error: %s\n", TAG, err);
-          if (pairing.load()) {
-            // Wrong PIN (or prompt dismissed). Reconnect so the TV shows a fresh PIN.
+          if (lgShouldRetryUnsigned(err, registrationId_ == id, unsignedRegistration_, consentStarted_, pinSubmitted_)) {
+            registrationDeadline_ = 0;
+            unsignedRetryPending_ = true;
+          } else {
+            // Denied consent / wrong PIN never starts a new pairing attempt.
+            LOGF("%s registration rejected: %s\n", TAG, err);
+            registrationBlocked_ = true;
             pairFailed = true;
-            ws_.disconnect();
-            wsBegun_ = false;
-          } else if (strstr(err, "403") || strstr(err, "401")) {
-            // Stored key refused: the TV forgot us. Fall into pairing mode so the
-            // UI can offer to re-pair rather than spinning forever.
-            LOGF("%s stored key rejected by %s\n", TAG, cur_.name);
+            lastError = millis();
+            dropAll();
           }
           return;
         }
@@ -720,7 +772,12 @@ void LGTV::handleCmd(const Cmd& c) {
   switch (c.type) {
     case CmdType::SelectTV: {
       int idx = atoi(c.a);
-      if (idx == curIdx_ && !pairing.load()) return;
+      if (idx == curIdx_ && !pairing.load() && !registrationBlocked_) return;
+      registrationBlocked_ = false;
+      unsignedRetryPending_ = false;
+      consentStarted_ = false;
+      pinSubmitted_ = false;
+      unsignedRegistration_ = false;
       TVRecord r;
       if (!store_->get(idx, r)) return;
       store_->setSelected(idx);
@@ -744,6 +801,11 @@ void LGTV::handleCmd(const Cmd& c) {
       break;
 
     case CmdType::PairStart: {
+      registrationBlocked_ = false;
+      unsignedRetryPending_ = false;
+      consentStarted_ = false;
+      pinSubmitted_ = false;
+      unsignedRegistration_ = false;
       int idx = store_->findByIp(c.a);
       if (idx < 0) {
         TVRecord r = {};
@@ -763,16 +825,25 @@ void LGTV::handleCmd(const Cmd& c) {
     }
 
     case CmdType::SubmitPin: {
-      if (link.load() != LinkState::NeedsPin) { lastError = millis(); return; }
+      if (link.load() != LinkState::NeedsPin || pinSubmitted_) { lastError = millis(); return; }
+      if (strlen(c.a) != 8) { lastError = millis(); return; }
+      for (const char* digit = c.a; *digit; ++digit) {
+        if (*digit < '0' || *digit > '9') { lastError = millis(); return; }
+      }
       pairFailed = false;
       String p = F("{\"pin\":\"");
       p += c.a; p += F("\"}");
       // The reply to setPin is the "registered" message itself, handled above.
-      request("ssap://pairing/setPin", p.c_str(), nullptr);
+      pinSubmitted_ = true;
+      registrationDeadline_ = millis() + 15000;
+      pinRequestId_ = request("ssap://pairing/setPin", p.c_str(), nullptr);
       break;
     }
 
     case CmdType::CancelPair: {
+      unsignedRetryPending_ = false;
+      consentStarted_ = false;
+      pinSubmitted_ = false;
       if (!pairing.exchange(false)) return;
       // A record that never got a key is useless: drop it.
       if (curIdx_ >= 0 && !cur_.clientKey[0]) store_->remove(curIdx_);

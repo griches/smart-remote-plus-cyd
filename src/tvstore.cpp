@@ -30,6 +30,7 @@ void TVStore::begin() {
         strlcpy(r.clientKey, o["key"] | "", sizeof(r.clientKey));
         strlcpy(r.mac, o["mac"] | "", sizeof(r.mac));
         strlcpy(r.wifiMac, o["wmac"] | "", sizeof(r.wifiMac));
+        r.unsignedRegistration = o["unsigned"] | false;
       }
     }
   }
@@ -42,6 +43,9 @@ void TVStore::begin() {
       strlcpy(r.clientKey, TVS[i].clientKey, sizeof(r.clientKey));
       strlcpy(r.mac, TVS[i].mac, sizeof(r.mac));
       strlcpy(r.wifiMac, TVS[i].wifiMac, sizeof(r.wifiMac));
+#ifdef TV_SEED_HAS_UNSIGNED
+      r.unsignedRegistration = TVS[i].unsignedRegistration;
+#endif
     }
     selected_ = count_ ? 0 : -1;
     LOGF("[store] seeded %d TVs from tv_config.h\n", count_);
@@ -64,6 +68,7 @@ void TVStore::save() {
     o["key"] = recs_[i].clientKey;
     o["mac"] = recs_[i].mac;
     o["wmac"] = recs_[i].wifiMac;
+    o["unsigned"] = recs_[i].unsignedRegistration;
   }
   String json;
   serializeJson(doc, json);

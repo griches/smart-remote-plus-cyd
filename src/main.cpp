@@ -304,7 +304,7 @@ static void drawKeypad() {
   const char* st = pkState == PK_Connecting ? "Connecting..."
                  : pkState == PK_Enter      ? "Enter the PIN on the TV"
                  : pkState == PK_Checking   ? "Checking..."
-                 : pkState == PK_Wrong      ? "Wrong PIN, try again"
+                 : pkState == PK_Wrong      ? "Pairing failed. Tap OK"
                                             : "Paired!";
   uint16_t sc = pkState == PK_Wrong ? TFT_RED : pkState == PK_Done ? TFT_GREEN : TFT_LIGHTGREY;
   tft.fillRect(0, 108, KP_X, 50, BG);
@@ -596,12 +596,23 @@ static void onPressKeypad(int x, int y) {
   int i = (y / KP_H) * 3 + (x - KP_X) / KP_W;
   if (i < 0 || i > 11) return;
   if (pkState == PK_Done) return;
+  if (pkState == PK_Wrong) {
+    if (i == 11) {
+      pin[0] = 0;
+      lg.pairFailed = false;
+      pkState = PK_Connecting;
+      lg.post(CmdType::PairStart, pairIp, pairName);
+      drawKeypad();
+    }
+    return;
+  }
+  if (pkState != PK_Enter) return;
   if (i == 9) {                       // backspace
     size_t n = strlen(pin);
     if (n) pin[n - 1] = 0;
     drawPinOnly();
   } else if (i == 11) {               // OK
-    if (!pin[0]) return;
+    if (strlen(pin) != 8) return;
     if (pkState != PK_Enter && pkState != PK_Wrong) return;
     pkState = PK_Checking;
     lg.post(CmdType::SubmitPin, pin);

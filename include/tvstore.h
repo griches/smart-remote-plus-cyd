@@ -12,6 +12,7 @@ struct TVRecord {
   char clientKey[96];
   char mac[18];
   char wifiMac[18];
+  bool unsignedRegistration = false;
 };
 
 class TVStore {

@@ -106,6 +106,15 @@ class LGTV {
   bool ptrBegun_ = false;
   bool ptrOpen_ = false;
   bool useTls_ = true;
+  bool unsignedRegistration_ = false;
+  bool unsignedRetryPending_ = false;
+  bool registrationBlocked_ = false;
+  bool consentStarted_ = false;
+  bool pinSubmitted_ = false;
+  bool registrationAnswered_ = false;
+  uint32_t registrationDeadline_ = 0;
+  uint32_t pinRequestId_ = 0;
+  String registrationId_;
   uint8_t failStreak_ = 0;
   uint32_t nextId_ = 1;
   static const int MAX_PENDING = 6;

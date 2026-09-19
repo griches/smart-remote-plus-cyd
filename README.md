@@ -188,3 +188,13 @@ and pull requests are just as welcome.
 
 MIT. App logos belong to their respective owners and are included for
 identification only.
+
+## webOS 26 compatibility (0.2.1)
+
+The remote retries registration once without the old certificate when the TV explicitly blacklists it or leaves the initial registration unanswered. It retains all permissions, remembers the successful mode with the paired TV, and uses that mode in the app picker too. Existing signed pairings still work. Imported CLI pairings carry their compatibility mode.
+
+A rejected PIN or approval stops the attempt. Tap **OK** on the failed pairing screen to request a new attempt, then enter the new eight-digit PIN. The firmware never loops through fresh pairing prompts on its own.
+
+Release binaries are built without personal Wi-Fi or TV credentials. Use the firmware `.bin` for an existing device's web updater; the factory `.bin` is for an initial USB flash at address `0x0`. Factory flashing can replace existing settings, so use OTA to preserve a configured device.
+
+Host checks: `c++ -std=c++17 -Iinclude -I.pio/libdeps/cyd/ArduinoJson/src tests/registration_test.cpp -o /tmp/cyd-registration-test && /tmp/cyd-registration-test`. Build with `pio run`.
